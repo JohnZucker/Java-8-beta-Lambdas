@@ -3,13 +3,15 @@ Java 8 is to ship with lambda expressions and a completely retooled set of Colle
 A distinguishing feature of Java 1 through to 7 is the absence of a clean lambda abstraction technique:
 the nearest approximation to this construct would be anonymous inner classes.
 
-A prominent question might be expected to be the question of how lambda expressions will fit into the
+This is to explore the question of how lambda expressions will fit into the
 Java 8 datatyping strategy including generics and collections.
 
 A surrounding question is what function-passing styles might be permitted as a result of the new abstraction:
 this has some bearing on how to practically implement effective Curries.
 
 The objective of my repo is to kick of some early explorations of these topics.
+
+See file src/QuickSortSerial.java for a simple test.
 
 If you have an interest, please leave a comment at johnz0@hotmail.com.
 
