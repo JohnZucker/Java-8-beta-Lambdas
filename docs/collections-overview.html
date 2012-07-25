@@ -1,0 +1,711 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns='http://www.w3.org/1999/xhtml'>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=ascii"/>
+    <title>State of the Collections</title>
+    <link rel="shortcut icon" href="http://openjdk.java.net/images/nanoduke.ico"/>
+    <style type="text/css">
+
+      A { text-decoration: none; }
+      A:link, A:visited { color: #437291; }
+      A:visited { color: #666666; }
+      A[href]:hover { color: #e76f00; }
+      A IMG { border-width: 0px; }
+      IMG { background: white; }
+      A.internal { color: #b00; }
+      A[name] { color: black; }
+
+      BODY {
+        background: white;
+        margin: 2em;
+        font-size: medium;
+        width: 60em;
+        margin-bottom: 100%;
+      }
+      BODY { font-family: Bitstream Vera Sans, Verdana, sans serif; }
+      PRE { font-family: monospace; }
+      CODE { font-family: courier new, monospace; font-size: medium; font-weight: bold; }
+
+      P { margin: 1ex 0em; }
+      PRE { margin: 1.5ex 2em; }
+      BLOCKQUOTE { margin: 1.5ex 2em; }
+      LI BLOCKQUOTE { margin-left: 0em; }
+      LI { margin: 0ex 0em; }
+      .todo { color: darkred; text-align: right; }
+
+      TABLE { border-collapse: collapse; padding: 0px; }
+      TD { padding: 0px; vertical-align: top; }
+
+      UL LI { list-style-type: square; }
+
+      DIV.summary { margin: 2ex 2em; }
+
+      DIV.head { margin-bottom: 2em; }
+      DIV.doctitle { font-size: x-large; font-weight: bold; }
+      DIV.twarn { color: #cc0000; font-size: smaller; font-weight: bold;
+                  margin-bottom: 1.5ex; }
+      DIV.authors { margin-top: 1ex; font-size: large; }
+      DIV.author A { font-style: italic; }
+      DIV.version { font-size: medium; margin-top: 1ex; }
+      DIV.copyright, DIV.comments { font-size: small; }
+      DIV.version SPAN.modified { color: green; font-weight: bold; }
+      DIV.head DIV.notes { margin-top: 1ex; }
+
+      P.subsection { margin-top: 2ex; }
+      P.subsection:first-child { margin-top: 1ex; }
+      P SPAN.title { font-weight: bold; padding-right: 1em; }
+
+      HR { border: 0px; border-top: 1px solid black; margin: 2ex 0em; }
+
+      DIV.qa { margin-top: 2ex; }
+
+      H1 { font-size: x-large; }
+      H2 { font-size: large; margin-top: 3ex; margin-bottom: 0ex; }
+
+      PRE {
+        padding: 1px 1ex;
+        background: #e8e8e8;
+        font-size: smaller;
+        ZZdisplay: none;
+      }
+
+    </style>
+  </head>
+  <body>
+<h1>State of the Lambda: Libraries Edition</h1>
+
+<!-- This document is in Markdown format:
+     http://daringfireball.net/projects/markdown/
+ -->
+
+<h4>April 2012</h4>
+
+<p>This is an informal overview of the major proposed library enhancements
+to take advantage of new language features, primarily lambda expressions and
+extension methods, specified by <a href="http://jcp.org/en/jsr/detail?id=335">JSR 335</a> and implemented in the OpenJDK
+<a href="http://openjdk.java.net/projects/lambda/">Lambda Project</a>.</p>
+
+<p>This document describes the design approach taken in the rough prototype that
+has been implemented in the
+<a href="http://openjdk.java.net/projects/lambda/">Lambda Project</a> repository.  It is intended as a working straw-man proposal;
+the final version may look different, but there is a working design and
+implementation that may now serve as a jumping-off point for discussions.</p>
+
+<h2>Background</h2>
+
+<p>Had lambda expressions (closures)
+been part of the Java language from the beginning, our Collections APIs would certainly
+look different than they do today.  As the Java language acquires lambda expressions
+as part of <a href="http://jcp.org/en/jsr/detail?id=335">JSR 335</a>, this has the unfortunate side effect of making
+our Collections interfaces look even more out of date!  While it might be tempting to start from scratch
+and build a replacement Collection framework ("Collections II"),
+replacing the Collection framework would be a major task, as the Collections interfaces
+permeate the JDK libraries.  Instead, we will pursue an evolutionary strategy of
+adding extension methods to existing
+interfaces (such as <code>Collection</code>, <code>List</code>, or <code>Iterable</code>), or perhaps to new
+interfaces (such as 'Stream') that are retrofitted onto existing classes,
+enabling many of the desired idioms without
+making people trade in their trusty <code>ArrayList</code>s and <code>HashMap</code>s.  (This is not to say that
+Java will never have a new Collections framework; clearly there are limitations with the existing
+Collections framework beyond simply not being designed for lambdas.  Creating a
+new-and-improved collections framework is a fine candidate for consideration in a future
+version of the JDK.)</p>
+
+<p>Parallelism is an important driver for this work.  Therefore, it is important
+to encourage idioms that are <em>both</em> sequential- and parallel-friendly.
+We achieve this by primarily focusing less on in-place mutation and more on computations that
+produce new values.  It is also important to strike the balance between
+making parallelism <em>easier</em> but not going so far as to make it <em>invisible</em>; our goal is
+<em>explicit but unobstrusive</em> parallelism for both old and new collections.</p>
+
+<p>For a description of the language features being specified by <a href="http://jcp.org/en/jsr/detail?id=335">JSR 335</a>, see the
+<a href="http://cr.openjdk.java.net/~briangoetz/lambda/lambda-state-4.html">State of the Lambda</a>.</p>
+
+<h3>Internal vs external iteration</h3>
+
+<p>The Collections framework relies on the concept of <em>external iteration</em>, where a <code>Collection</code>
+provides a way for its client to enumerate its elements (<code>Collection</code> extends
+<code>Iterable</code>), and clients use this to step sequentially through the elements of a collection.  For example,
+if we wanted to set the color of every block in a collection of blocks to red, we would write:</p>
+
+<pre><code>for (Block b : blocks) {
+    b.setColor(RED);
+}
+</code></pre>
+
+<p>This example illustrates external iteration; the for-each loop calls the <code>iterator()</code>
+method of <code>blocks</code>, and steps through the collection one by one.  External iteration
+is straightforward enough, but it has several problems:</p>
+
+<ul>
+<li>It is inherently serial (unless the language provides a construct for
+parallel iteration, which Java does not), and is required to process the
+elements in the order specified by the collection.</li>
+<li>It deprives the library method of the opportunity to manage the control
+flow, which might be able to exploit reordering of the data, parallelism,
+short-circuiting, or laziness to improve performance.</li>
+</ul>
+
+<p>Sometimes the tight specification of the for-each loop (sequential, in-order) is desirable,
+but sometimes this is an impediment to performance.</p>
+
+<p>The alternative to external iteration
+is <em>internal iteration</em>, where instead of controlling the iteration, the client delegates that
+to the library and passes in snippets of code to execute at various points in the computation.</p>
+
+<p>The internal-iteration equivalent of the previous example is:</p>
+
+<pre><code>blocks.forEach(b -&gt; { b.setColor(RED); });
+</code></pre>
+
+<p>This approach moves the control flow management from the client code to the library code,
+allowing the libraries not only to abstract over common control flow operations,
+but also enabling them to potentially use laziness, parallelism, and out-of-order execution to
+improve performance.  (Whether the implementation of <code>forEach</code> actually does any of these
+things is a matter for the library implementor <code>forEach</code> to decide, but with internal iteration
+they are at least possible, whereas with external iteration, they are not.)</p>
+
+<p>Internal iteration lends itself to a programming style where operations can be "pipelined"
+together.  For example, if we wanted to color only the blue blocks red, we could say:</p>
+
+<pre><code>blocks.filter(b -&gt; b.getColor() == BLUE)
+      .forEach(b -&gt; { b.setColor(RED); });
+</code></pre>
+
+<p>The <em>filter</em> operation produces a stream of values matching the provided condition,
+and the result of the filter operation is piped into <code>forEach</code>.</p>
+
+<p>If we wanted to collect the blue blocks into a new <code>List</code>, we could say:</p>
+
+<pre><code>List&lt;Block&gt; blue = blocks.filter(b -&gt; b.getColor() == BLUE)
+                         .into(new ArrayList&lt;&gt;());
+</code></pre>
+
+<p>If each block were contained in a Box, and we wanted to know which boxes contained at least one blue
+block, we could say:</p>
+
+<pre><code>Set&lt;Box&gt; hasBlueBlock = blocks.filter(b -&gt; b.getColor() == BLUE)
+                              .map(b -&gt; b.getContainingBox())
+                              .into(new HashSet&lt;&gt;());
+</code></pre>
+
+<p>If we wanted to add up the total weight of the blue blocks, we could express that as:</p>
+
+<pre><code>int sum = blocks.filter(b -&gt; b.getColor() == BLUE)
+                .map(b -&gt; b.getWeight())
+                .sum();
+</code></pre>
+
+<p>So far, we haven't yet written down the signatures of these operations -- these are shown
+later.  The examples here simply illustrate the types of problems that are easily solved
+with internal iteration, and illustrate functionality we want to expose on collections.</p>
+
+<h2>The role of laziness</h2>
+
+<p>Operations like filtering or mapping, can be performed "eagerly" (where the filtering
+is complete on the return from the <code>filter</code> method), or "lazily" (where the filtering is only
+done when you start iterating the elements of the result of the <code>filter</code> method.)
+Stream operations that produce new streams, such as filtering or mapping, lend themselves
+to lazy implementation, which often can result in significant performance improvements.
+We can think of these operations as "naturally lazy", whether or not they are implemented as such.
+On the other hand, operations like accumulation, or those that produce side effects such as
+dumping the results into a collection or doing something for each element (such as printing
+them out), are "naturally eager."</p>
+
+<p>Based on examination of many existing loops, a significant proportion can be restated
+(often getting significantly smaller in the process) as bulk operations drawing from a data
+source (array or collection), doing a series of lazy operations (filtering, mapping, etc), and
+then doing a single eager operation -- such as filter-map-accumulate, filter-map-sort-foreach, etc.
+Accordingly, most of the naturally lazy operations tend to be used to compute temporary
+intermediate results, and we can exploit this property to produce more efficient libraries.
+(For example, a library that does filtering or mapping lazily can fuse pipelines like
+filter-map-accumulate into a single pass on the data, rather than three distinct passes;
+a library that does them eagerly cannot.  Similarly, if we are looking for the first element
+that matches a certain characteristic, a lazy approach lets us get to the answer having
+examined fewer elements.)</p>
+
+<p>This observation informs a critical design choice: what should the return value
+of <code>filter</code> and <code>map</code> be?  One candidate would be that <code>List.filter</code> returns a new <code>List</code>,
+which would push us towards an all-eager approach.  This is straightforward, but may well
+end up doing way more work than we really need.  Another approach would be to create
+a whole new set of abstractions for explicit laziness -- <code>LazyList</code>, <code>LazySet</code>, etc.  (But
+note that lazy collections still have operations that trigger eager computation -- such as <code>size</code>.)
+And, this approach has the risk to devolve into a combinatorial explosion of types like
+<code>MutableSynchronizedLazySortedSet</code>, etc.</p>
+
+<p>Our preferred approach is to treat the naturally-lazy operations as returning a stream
+(such as <code>Iterable</code>) rather than a new collection (which might just get thrown away by the next
+pipeline stage anyway).   Applying this to the examples above, <code>filter</code> draws from a source
+(which might be another stream) and produces a stream of values matching the provided
+<code>Predicate</code>.  In most cases where potentially-lazy operations are being applied to aggregates,
+this turns out to be exactly what we want -- a stream of values that can be passed to the
+next stage in the pipeline.  For the time being, <code>Iterable</code> will be our abstraction for streams,
+but this is an explicitly temporary choice that we will revisit soon, perhaps creating a <code>Stream</code> abstraction
+that doesn't have the issues that <code>Iterable</code> does (inherent check-then-act behavior; assumption
+of mutability of underlying source; lives in <code>java.lang</code>.)</p>
+
+<p>The stream approach has the advantage that, when used in a source-lazy-lazy-eager pipeline,
+the laziness is mostly invisible, as the pipeline is "sealed" at both ends, but yields both
+good usability and performance without dramatically increasing the conceptual surface area of
+the library.</p>
+
+<h2>Streams</h2>
+
+<p>A strawman set of stream operations is shown below.  These methods are inherently
+sequential, processing elements in the order returned by upstream iterators (<em>encounter order</em>).
+In the current implementation, we've used <code>Iterable</code> as our host for these methods.
+The methods that return a new <code>Iterable</code> are lazy; those that do not are eager.  All of these
+operations can be implemented by default methods solely in terms of <code>iterator()</code>, so no additional
+work is required for existing Collection implementations to acquire the new functionality.
+Note also that the Stream functionality is only tangentially tied to Collections; if an alternate
+collection framework wanted to acquire these methods, all they would have to do is implement
+<code>Iterable</code>.</p>
+
+<p>Streams differ from Collections in several ways:</p>
+
+<ul>
+<li>No storage.  Streams don't have storage for values; they carry values from a data structure
+through a pipeline of operations.</li>
+<li>Functional in nature.  An operation on a stream produces a result, but does not modify its
+underlying data source.  A Collection can be used as a source for a stream (subject to suitable
+non-interference requirements, see below.)</li>
+<li>Laziness-seeking.  Many stream operations, such as filtering, mapping, sorting, or duplicate
+removal) can be implemented lazily, meaning we only need to examine as many elements from the
+stream as we need to find the desired answer.  For example, "find the first string longer than
+20 characters" need not examine all the input strings.</li>
+<li>Bounds optional.  There are many problems that are sensible to express as infinite streams,
+letting clients consume values until they are satisfied.  (If we were enumerating perfect numbers,
+it is easy to express this as a filtering operation on the stream of all integers.)  Collections
+don't let you do this, but streams do.</li>
+</ul>
+
+<p>The following shows a basic set of stream operations, expressed as extension methods on <code>Iterable</code>.</p>
+
+<pre><code>public interface Iterable&lt;T&gt; {
+    // Abstract methods
+    Iterator&lt;T&gt; iterator();
+
+    // Lazy operations
+    Iterable&lt;T&gt; filter(Predicate&lt;? super T&gt; predicate) default ...
+
+    &lt;U&gt; Iterable&lt;U&gt; map(Mapper&lt;? super T, ? extends U&gt; mapper) default ...
+
+    &lt;U&gt; Iterable&lt;U&gt; flatMap(Mapper&lt;? super T, ? extends Iterable&lt;U&gt;&gt; mapper) default ...
+
+    Iterable&lt;T&gt; cumulate(BinaryOperator&lt;T&gt; op) default ...
+
+    Iterable&lt;T&gt; sorted(Comparator&lt;? super T&gt; comparator) default ...
+
+    &lt;U extends Comparable&lt;? super U&gt;&gt; Iterable&lt;T&gt; sortedBy(Mapper&lt;? super T, U&gt; extractor) default ...
+
+    Iterable&lt;T&gt; uniqueElements() default ...
+
+    &lt;U&gt; Iterable&lt;U&gt; pipeline(Mapper&lt;Iterable&lt;T&gt;, ? extends Iterable&lt;U&gt;&gt; mapper) default ...
+
+    &lt;U&gt; BiStream&lt;T, U&gt; mapped(Mapper&lt;? super T, ? extends U&gt; mapper) default ...
+    &lt;U&gt; BiStream&lt;U, Iterable&lt;T&gt;&gt; groupBy(Mapper&lt;? super T, ? extends U&gt; mapper) default ...
+    &lt;U&gt; BiStream&lt;U, Iterable&lt;T&gt;&gt; groupByMulti(Mapper&lt;? super T, ? extends Iterable&lt;U&gt;&gt; mapper) default ...
+
+    // Eager operations
+
+    boolean isEmpty() default ...;
+    long count() default ...
+
+    T getFirst() default ...
+    T getOnly() default ...
+    T getAny() default ...
+
+    void forEach(Block&lt;? super T&gt; block) default ...
+
+    T reduce(T base, BinaryOperator&lt;T&gt; reducer) default ...
+
+    &lt;A extends Fillable&lt;? super T&gt;&gt; A into(A target) default ...
+
+    boolean anyMatch(Predicate&lt;? super T&gt; filter) default ...
+    boolean noneMatch(Predicate&lt;? super T&gt; filter) default ...
+    boolean allMatch(Predicate&lt;? super T&gt; filter) default ...
+
+    &lt;U extends Comparable&lt;? super U&gt;&gt; T maxBy(Mapper&lt;? super T, U&gt; extractor) default ...
+    &lt;U extends Comparable&lt;? super U&gt;&gt; T minBy(Mapper&lt;? super T, U&gt; extractor) default ...
+}
+</code></pre>
+
+<h3>Laziness and short-circuiting</h3>
+
+<p>Methods like <code>anyMatch</code>, while eager, can use short-circuiting to
+stop processing once they can determine the final result -- it need only
+evaluate the predicate on enough elements to find a single element for which the predicate is
+true.</p>
+
+<p>In a pipeline like:</p>
+
+<pre><code>int sum = blocks.filter(b -&gt; b.getColor() == BLUE)
+                .map(b -&gt; b.getWeight())
+                .sum();
+</code></pre>
+
+<p>the <code>filter</code> and <code>map</code> operations are lazy.  This means that we don't start drawing elements
+from the source until we start the <code>sum</code> step, minimizing the bookkeeping costs required
+to manage intermediate elements.  Additionally, given a pipeline like:</p>
+
+<pre><code>Block firstBlue = blocks.filter(b -&gt; b.getColor() == BLUE)
+                        .getFirst();
+</code></pre>
+
+<p>Because the filter step is lazy, the <code>getFirst</code> step will only draw on the upstream <code>Iterator</code> until
+it gets an element, which means we need only evaluate the predicate on elements until we find
+one for which the predicate is true, rather than all of them.</p>
+
+<p>Note that the user didn't have to ask for laziness, or even think about it very much; the right
+thing happened, with the library arranging for as little computation as it could.</p>
+
+<p>The user <em>could</em> invoke this pipeline as:</p>
+
+<pre><code>Iterable&lt;Block&gt; it = blocks.filter(b -&gt; b.getColor() == BLUE);
+</code></pre>
+
+<p>and obtain an <code>Iterator</code> from that, though we have tried to design the feature set to not
+require this usage.  In this case, this operation would merely create an <code>Iterable</code>, but
+do no work other than to retain a reference to the upstream <code>Iterable</code> (blocks) and
+the <code>Predicate</code> on which we are filtering.  All the work is done later, when an <code>Iterator</code>
+is obtained from this <code>Iterable</code>.</p>
+
+<h3>Common functional interfaces</h3>
+
+<p>Lambda expressions in Java are converted into instances of one-method interfaces (<em>functional
+interfaces</em>).  The package <code>java.util.functions</code> contains a "starter set" of functional interfaces:</p>
+
+<ul>
+<li>Predicate<T> -- a property of the object passed as argument</li>
+<li>Block<T> -- an action to be performed with the object passed as argument</li>
+<li>Mapper<T,U> -- transform a T to a U</li>
+<li>UnaryOperator<T> -- a unary operator from T -> T</li>
+<li>BinaryOperator<T> -- a binary operator from (T, T) -> T</li>
+</ul>
+
+<p>It may be desirable, for performance reasons, to provide specialized primitive versions of
+these core interfaces.  (In this case, the full complement of primitive specializations is
+probably not needed; if we provide versions for <code>Integer</code>, <code>Long</code>, and <code>Double</code>, the other
+primitive types can be accomodated through conversions.)  The details of primitive specialization
+are not determined at this time.</p>
+
+<h3>Non-interference assumptions</h3>
+
+<p>Because <code>Iterable</code> may describe a mutable collection, there is the possibility for interference
+if the collection is modified while it is being traversed.  The new operations on <code>Iterable</code> are
+intended to be used while the underlying source is held constant for the
+duration of the operation.  (This condition is generally easy to maintain; if the collection
+is confined to the current thread, simply ensure that the lambda expressions passed to <code>filter</code>, <code>map</code>, etc.,
+do not mutate the underlying collection.  This condition is not substantially different from the restrictions
+on iterating Collections today; if a Collection is modified while being iterated, most implementations
+throw <code>ConcurrentModificationException</code>.)  In the example above where we create an <code>Iterable</code> by filtering
+a collection, the elements encountered when traversing the filtered <code>Iterable</code> are based on those
+returned by the <code>Iterator</code> of the underlying collection.  Accordingly, repeated calls to <code>iterator()</code>
+will result in repeated traversals of the upstream <code>Iterable</code>s; there is no caching of lazily-computed
+results here.  (Because most pipelines will look like source-lazy-lazy-eager, most of the time the
+underlying collection will be traversed only once anyway.)</p>
+
+<h3>Examples</h3>
+
+<p>Below is an example from the JDK class <code>Class</code> (the <code>getEnclosingMethod</code> method), which loops over all declared methods,
+matching method name, return type, and number and type of parameters.  Here is the original code:</p>
+
+<pre><code> for (Method m : enclosingInfo.getEnclosingClass().getDeclaredMethods()) {
+     if (m.getName().equals(enclosingInfo.getName()) ) {
+         Class&lt;?&gt;[] candidateParamClasses = m.getParameterTypes();
+         if (candidateParamClasses.length == parameterClasses.length) {
+             boolean matches = true;
+             for(int i = 0; i &lt; candidateParamClasses.length; i++) {
+                 if (!candidateParamClasses[i].equals(parameterClasses[i])) {
+                     matches = false;
+                     break;
+                 }
+             }
+
+             if (matches) { // finally, check return type
+                 if (m.getReturnType().equals(returnType) )
+                     return m;
+             }
+         }
+     }
+ }
+
+ throw new InternalError("Enclosing method not found");
+</code></pre>
+
+<p>Using <code>filter</code> and <code>getFirst</code>, we can eliminate all the temporary variables and move the control logic
+into the library.  We fetch the list of methods from reflection, turn it into a <code>Iterable</code> with
+<code>Arrays.asList</code> (we could, alternately, inject a stream-like interface into array types), and then
+use a series of filters to reject the ones that don't match name, parameter types, or return type:</p>
+
+<pre><code>Method matching =
+     Arrays.asList(enclosingInfo.getEnclosingClass().getDeclaredMethods())
+        .filter(m -&gt; Objects.equals(m.getName(), enclosingInfo.getName())
+        .filter(m -&gt;  Arrays.equals(m.getParameterTypes(), parameterClasses))
+        .filter(m -&gt; Objects.equals(m.getReturnType(), returnType))
+        .getFirst();
+if (matching == null)
+    throw new InternalError("Enclosing method not found");
+return matching;
+</code></pre>
+
+<p>This version of the code is both more compact and less error-prone.</p>
+
+<p>Stream operations are very effective for ad-hoc queries over collections.  Consider a
+hypothetical "music library" application, where a library has a list of albums, an album
+has a title and a list of tracks, and a track has a name, artist, and rating.</p>
+
+<p>Consider the query "find me the names of albums that have at least one track rated four or
+higher, sorted by name."  To construct this set, we might write:</p>
+
+<pre><code>List&lt;Album&gt; favs = new ArrayList&lt;&gt;();
+for (Album a : albums) {
+    boolean hasFavorite = false;
+    for (Track t : a.tracks) {
+        if (t.rating &gt;= 4) {
+            hasFavorite = true;
+            break;
+        }
+    }
+    if (hasFavorite)
+        favs.add(a);
+}
+Collections.sort(favs, new Comparator&lt;Album&gt;() {
+                           public int compare(Album a1, Album a2) {
+                               return a1.name.compareTo(a2.name);
+                           }});
+</code></pre>
+
+<p>We can use the stream operations to simplify each of the three major steps --
+identification of whether any track in an album has a rating of at least
+for (<code>anyMatch</code>), the sorting, and the collection of albums matching our criteria
+into a <code>List</code>:</p>
+
+<pre><code>List&lt;Album&gt; sortedFavs =
+  albums.filter(a -&gt; a.tracks.anyMatch(t -&gt; (t.rating &gt;= 4)))
+        .sortedBy(a -&gt; a.name)
+        .into(new ArrayList&lt;&gt;());
+</code></pre>
+
+<h2>Nonlinear streams</h2>
+
+<p>The "obvious" stream shape, described above, is a simple linear stream of values, such as might be
+managed by an array or Collection.  There are other common shapes we might want to represent, such
+as a stream of (key, value) pairs (possibly with the restriction that the keys be unique.)</p>
+
+<p>It might be convenient to represent a bi-valued stream as a stream of <code>Pair&lt;X,Y&gt;</code> values.  This would
+be easy and allow us to reuse the existing stream machinery, but creates a new problem: if there are new
+operations we might want to perform on a key-value stream (such as splitting it into a <code>keys</code> or
+<code>values</code> stream), erasure gets in the way -- we have no way to express methods that exist only if
+the type variables of the class satisfy some constraint, such as being a <code>Pair</code>.   (It is worth nothing that this is an
+advantage of the static extension methods from C#, which are injected into instantiated generic types
+rather than classes.)  Additionally, modeling a bi-valued stream as a stream of <code>Pair</code> objects might
+have significant "boxing" overhead.  In general, each distinct "shape" of stream will likely require
+its own stream abstraction, but this is not unreasonable as each distinct shape will have its own set
+of operations that are sensible on that shape.</p>
+
+<p>For this reason, we model bi-valued streams using a separate abstraction, which we have tentatively
+called <code>BiStream</code>.  So our stream library has two basic stream shapes: linear (<code>Iterable</code>) and map-shaped (<code>BiStream</code>),
+just as the Collections framework has two basic shapes (<code>Collection</code> and <code>Map</code>.)</p>
+
+<p>A bi-valued stream can model the result of a "zip" operation, the contents of
+a map, or the results of a group-by operation (where the result is a <code>BiStream&lt;U, Stream&lt;V&gt;&gt;</code>.)
+For example, consider the problem of constructing a histogram of the lengths of words in a document.
+If we model the document as a stream of words, we can do a "group by" operation on the stream, grouping
+by length, and then do a "reduce" (sum) operation on the values associated with a given key to obtain
+a map from word lengths to counts of words with that length:</p>
+
+<pre><code>Map&lt;Integer, Integer&gt;
+    counts = document.words()                             // stream of strings
+                     .groupBy(s -&gt; s.length())            // bi-stream length -&gt; stream of words with that length
+                     .mapValues(stream -&gt; stream.count()) // bi-stream length -&gt; count of words
+                     .into(new HashMap&lt;&gt;());              // Map length -&gt; count
+</code></pre>
+
+<h2>Parallelism</h2>
+
+<p>While the use of internal iteration makes it possible that operations be done in parallel,
+we do not wish to inflict any sort of "transparent parallelism" on the user.
+Instead, users should be able to select parallelism in an explicit but unobtrusive manner.
+We accomplish this by allowing clients to explicitly ask for a "parallel view" of the collection,
+whose operations execute in parallel; this is exposed on <code>Collection</code> via the <code>parallel()</code> method.
+If we wanted to calculate our "sum of the weights of blue blocks" query in parallel, we need only
+add a call to <code>parallel()</code>:</p>
+
+<pre><code>int sum = blocks.parallel()
+                .filter(b -&gt; b.getColor() == BLUE)
+                .map(b -&gt; b.getWeight())
+                .sum();
+</code></pre>
+
+<p>This looks very similar to the serial version, but is clearly identified as parallel without the
+parallel machinery overwhelming the code.</p>
+
+<p>With the Fork/Join framework added in Java SE 7, we have efficient machinery for implementing parallel
+operations.  However, one of the goals of this effort is to reduce the gap between the serial and
+parallel versions of the same computation, and currently parallelizing a computation with Fork/Join
+looks very different from (and much bigger than) the serial code -- a barrier to parallelization.
+By exposing parallel versions of the stream operations and enabling users to explicitly choose between
+serial and parallel execution, we can close this gap substantially.</p>
+
+<p>The steps involved in implementing parallel computations with Fork/Join are: dividing a
+problem into subproblems, solving the subproblems sequentially, and combining the results of subproblems.
+The Fork/Join machinery is designed to automate this process.</p>
+
+<p>We model the structural requirements of Fork/Join with an abstraction
+for splitting, called <code>Splittable</code>, which describes a sub-aggregate that can be further split into smaller pieces,
+or whose elements can be iterated sequentially.</p>
+
+<pre><code>public interface Splittable&lt;T, S extends Splittable&lt;T, S&gt;&gt; {
+    /** Return an {@link Iterator}  for the elements of this split.   In general, this method is only called
+     * at the leaves of a decomposition tree, though it can be called at any level.  */
+    Iterator&lt;T&gt; iterator();
+
+    /** Decompose this split into two splits, and return the left split.  If further splitting is impossible,
+     * {@code left} may return a {@code Splittable} representing the entire split, or an empty split.
+     */
+    S left();
+
+    /** Decompose this split into two splits, and return the right split.  If further splitting is impossible,
+     * {@code right} may return a {@code Splittable} representing the entire split, or an empty split.
+     */
+    S right();
+
+    /**
+     * Produce an {@link Iterable} representing the contents of this {@code Splittable}.  In general, this method is
+     * only called at the top of a decomposition tree, indicating that operations that produced the {@code Spliterable}
+     * can happen in parallel, but the results are assembled for sequential traversal.  This is designed to support
+     * patterns like:
+     *     collection.filter(t -&gt; t.matches(k))
+     *               .map(t -&gt; t.getLabel())
+     *               .sorted()
+     *               .sequential()
+     *               .forEach(e -&gt; println(e));
+     * where the filter / map / sort operations can occur in parallel, and then the results can be traversed
+     * sequentially in a predicatable order.
+     */
+    Iterable&lt;T&gt; sequential();
+}
+</code></pre>
+
+<p>Implementing <code>Splittable</code> for common data structures like array-based lists, binary trees, and maps is
+straightforward.</p>
+
+<p>We describe sequential collections with <code>Iterable</code>, which means a collection knows how to dispense
+its members sequentially.  The parallel analogue of <code>Iterable</code> embodies the <code>Splittable</code> behavior, as well
+as aggregate operations analogous to those on <code>Iterable</code>.  We are currently calling this <code>ParallelIterable</code>.</p>
+
+<pre><code>public interface ParallelIterable&lt;T&gt; extends Splittable&lt;T, ParallelIterable&lt;T&gt;&gt; {
+    // Lazy operations
+    ParallelIterable&lt;T&gt; filter(Predicate&lt;? super T&gt; predicate) default ...
+
+    &lt;U&gt; ParallelIterable&lt;U&gt; map(Mapper&lt;? super T, ? extends U&gt; mapper) default ...
+
+    &lt;U&gt; ParallelIterable&lt;U&gt; flatMap(Mapper&lt;? super T, ? extends Iterable&lt;U&gt;&gt; mapper) default ...
+
+    ParallelIterable&lt;T&gt; cumulate(BinaryOperator&lt;T&gt; op) default ...
+
+    ParallelIterable&lt;T&gt; sorted(Comparator&lt;? super T&gt; comparator) default ...
+
+    &lt;U extends Comparable&lt;? super U&gt;&gt; ParallelIterable&lt;T&gt; sortedBy(Mapper&lt;? super T, U&gt; extractor) default ...
+
+    ParallelIterable&lt;T&gt; uniqueElements() default ...
+
+    // Eager operations
+
+    boolean isEmpty() default ...;
+    long count() default ...
+
+    T getFirst() default ...
+    T getOnly() default ...
+    T getAny() default ...
+
+    void forEach(Block&lt;? super T&gt; block) default ...
+
+    T reduce(T base, BinaryOperator&lt;T&gt; reducer) default ...
+
+    &lt;A extends ParallelFillable&lt;? super T&gt;&gt; A into(A target) default ...
+    &lt;A extends Fillable&lt;? super T&gt;&gt; A into(A target) default ...
+
+    boolean anyMatch(Predicate&lt;? super T&gt; filter) default ...
+    boolean noneMatch(Predicate&lt;? super T&gt; filter) default ...
+    boolean allMatch(Predicate&lt;? super T&gt; filter) default ...
+
+    &lt;U extends Comparable&lt;? super U&gt;&gt; T maxBy(Mapper&lt;? super T, U&gt; extractor) default ...
+    &lt;U extends Comparable&lt;? super U&gt;&gt; T minBy(Mapper&lt;? super T, U&gt; extractor) default ...
+}
+</code></pre>
+
+<p>You will notice that the set of operations on <code>ParallelIterable</code> are very similar to those on <code>Iterable</code>,
+except that the lazy operations return a <code>ParallelIterable</code> instead of an <code>Iterable</code>.  This means that
+pipelines of operations on sequential collections will also work the same way (just in parallel) on
+parallel collections.</p>
+
+<p>The last step needed is a way to get a <code>ParallelIterable</code> from a (sequential) collection;
+this is what is returned by the new <code>parallel()</code> method on <code>Collection</code>.</p>
+
+<pre><code>interface Collection&lt;T&gt; {
+    ....
+    ParallelIterable&lt;T&gt; parallel();
+}
+</code></pre>
+
+<p>What we have achieved here is a separation of the structural properties of recursive decomposition from
+the algorithms that can be executed in parallel on decomposible data structures.  The author of a data structure need
+only implement the <code>Splittable</code> methods and can then have immediate access to the parallel implementations
+of <code>filter</code>, <code>map</code>, and friends.  Similarly, adding a new method to <code>ParallelIterable</code> makes it immediately
+available on any data structure that knows how to split itself.</p>
+
+<h2>Mutative operations</h2>
+
+<p>Many use cases for bulk operations on collections produce a new value, collection, or side-effect.
+However, sometimes we do want to mutate the collection in-place.  The primary in-place mutations on
+<code>Collection</code> we intend to add are:</p>
+
+<ul>
+<li>Remove all elements matching a Predicate (<code>Collection</code>)</li>
+<li>Replace all elements matching a Predicate with a new Element (<code>List</code>)</li>
+<li>Sorting a List (<code>List</code>)</li>
+</ul>
+
+<p>These will be added as extension methods on the appropriate interface.</p>
+
+<h2>Open Issues</h2>
+
+<p>The design space for this problem is huge, and we've deliberately narrowed our focus thusfar
+to identifying the primary abstractions and operations.  As such, there are a significant
+number of open issues in the design, including:</p>
+
+<ul>
+<li>Attachment to collections.  The current prototype implements the stream operations as extension
+methods on <code>Iterable</code>, which is explicitly a short-term convenience while we evaluate the best
+place for these methods to live, and the best way to iterate the elements of a stream.  (The
+semantics of <code>Iterator</code> are problematic for several reasons.)</li>
+<li>Primitive specialization.  Since Java generics do not support primitives as type arguments, as currently specified
+primitives will be boxed.  This is likely to introduce significant overhead in calculations
+such as the sum-of-weights-of-blue-blocks example.  There are a number of alternatives we
+are considering to address this problem, including: abstractions for streams of the common
+primitive types, specialized fused <code>mapReduce</code> operations, and both VM-based and library-based
+techniques for box elimination.</li>
+<li>Exceptions.  Currently, the functional interface types are not compatible with lambdas that throw
+checked exceptions.</li>
+<li>Infinite streams.  It seems desirable to support infinite streams, but not a lot of attention has
+been paid to this issue to date.</li>
+<li>One-shot streams vs rewindable streams.  Streams backed by collections can be traversed many times;
+streams backed by, say, IO cannot be.  How this is reflected in the API has not yet been determined.</li>
+<li>MapStream vs BiStream.  It is not clear whether we want one or two abstractions for bi-valued
+streams (one being "pair shaped", and the other being "key-value shaped" with unique keys.)</li>
+<li>Nulls.  Some Collection implementations support nulls, and some don't.  Allowing collections to
+contain nulls is generally acknowledged as a mistake; it would be cleaner if streams did not have
+to support nulls.</li>
+</ul>
+
+<h2>Status</h2>
+
+<p>There is currently a strawman implementation of most of the features shown so far in the OpenJDK lambda
+repository, including serial and parallel implementations of most of the aggregate operations.</p>
+
+<!--
+[title]: State of the Collections
+-->
+</body></html>
