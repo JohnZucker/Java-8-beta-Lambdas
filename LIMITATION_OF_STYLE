@@ -1,0 +1,11 @@
+Suggest that this is a limitation of style when compared to applicative styles
+
+    public List sort(List numArray) {
+   	 int pivot = 0;
+
+   	 List result = sort (numArray.filter(x -> numArray.get(x) < numArray.get(pivot)));
+   			 result.add(numArray.get(0));
+   			 result.addAll(sort (numArray.filter(x -> numArray.get(x) > numArray.get(pivot))));
+   	 return result;
+
+result needs to be computed by side effects before the filter is finally applied to numArray
